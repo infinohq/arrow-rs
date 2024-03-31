@@ -743,21 +743,19 @@ impl MultipartUpload for LocalUpload {
     async fn complete(&mut self) -> Result<PutResult> {
         let src = self.src.take().context(AbortedSnafu)?;
         let s = Arc::clone(&self.state);
-        maybe_spawn_blocking(move || {
-            // Ensure no inflight writes
-            let f = s.file.lock().take().context(AbortedSnafu)?;
-            std::fs::rename(&src, &s.dest).context(UnableToRenameFileSnafu)?;
-            let metadata = f.metadata().map_err(|e| Error::Metadata {
-                source: e.into(),
-                path: src.to_string_lossy().to_string(),
-            })?;
 
-            Ok(PutResult {
-                e_tag: Some(get_etag(&metadata)),
-                version: None,
-            })
+        // Ensure no inflight writes
+        let f = s.file.lock().take().context(AbortedSnafu)?;
+        std::fs::rename(&src, &s.dest).context(UnableToRenameFileSnafu)?;
+        let metadata = f.metadata().map_err(|e| Error::Metadata {
+            source: e.into(),
+            path: src.to_string_lossy().to_string(),
+        })?;
+
+        Ok(PutResult {
+            e_tag: Some(get_etag(&metadata)),
+            version: None,
         })
-        .await
     }
 
     async fn abort(&mut self) -> Result<()> {
