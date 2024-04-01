@@ -35,7 +35,6 @@ use url::Url;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{
-    maybe_spawn_blocking,
     path::{absolute_path_to_url, Path},
     util::InvalidGetRange,
     GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
@@ -175,6 +174,16 @@ impl From<Error> for super::Error {
             },
         }
     }
+}
+
+/// Takes a function and executes it without any Tokio blocking thread.
+/// This is needed as Tokio encourages not to spawn blocking threads from async context.
+async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    f()
 }
 
 /// Local filesystem storage providing an [`ObjectStore`] interface to files on
@@ -744,18 +753,21 @@ impl MultipartUpload for LocalUpload {
         let src = self.src.take().context(AbortedSnafu)?;
         let s = Arc::clone(&self.state);
 
-        // Ensure no inflight writes
-        let f = s.file.lock().take().context(AbortedSnafu)?;
-        std::fs::rename(&src, &s.dest).context(UnableToRenameFileSnafu)?;
-        let metadata = f.metadata().map_err(|e| Error::Metadata {
-            source: e.into(),
-            path: src.to_string_lossy().to_string(),
-        })?;
+        maybe_spawn_blocking(move || {
+            // Ensure no inflight writes
+            let f = s.file.lock().take().context(AbortedSnafu)?;
+            std::fs::rename(&src, &s.dest).context(UnableToRenameFileSnafu)?;
+            let metadata = f.metadata().map_err(|e| Error::Metadata {
+                source: e.into(),
+                path: src.to_string_lossy().to_string(),
+            })?;
 
-        Ok(PutResult {
-            e_tag: Some(get_etag(&metadata)),
-            version: None,
+            Ok(PutResult {
+                e_tag: Some(get_etag(&metadata)),
+                version: None,
+            })
         })
+        .await
     }
 
     async fn abort(&mut self) -> Result<()> {
